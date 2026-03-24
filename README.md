@@ -20,6 +20,16 @@ Other containers on the same network can then reach the tailnet service by conne
 | `LISTEN_PORT` | `80` | Port to listen on inside the container (must match the published port). |
 | `TS_SOCKS5_ADDR` | `localhost:1055` | Address of the `tailscaled` SOCKS5 server. Typically does not need to be changed. |
 
+## Container image
+
+A pre-built image is available on GitHub Container Registry:
+
+```sh
+podman pull ghcr.io/lczerner/tailscale-proxy:latest
+```
+
+Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned release.
+
 ## Build
 
 ```sh
