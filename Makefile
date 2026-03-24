@@ -1,4 +1,4 @@
-IMAGE := localhost/tailscaleproxy
+IMAGE := localhost/tailscale-proxy
 LISTEN_PORT := 8080
 
 .PHONY: build run
