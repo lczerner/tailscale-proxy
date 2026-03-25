@@ -12,7 +12,8 @@ ENV TS_AUTHKEY=""
 ENV TS_DEST_HOST=""
 ENV TS_DEST_PORT="80"
 # Port to expose
-ENV LISTEN_PORT="80"
+ARG LISTEN_PORT=80
+ENV LISTEN_PORT=${LISTEN_PORT}
 # Tailscale userspace SOCKS5 proxy (default)
 ENV TS_SOCKS5_ADDR="localhost:1055"
 
