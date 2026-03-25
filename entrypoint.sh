@@ -23,10 +23,6 @@ for i in $(seq 1 30); do
   tailscale status &>/dev/null && break
   sleep 1
 done
-if ! tailscale status &>/dev/null; then
-  echo "[ts-proxy] Timed out waiting for tailscaled to be ready, exiting."
-  exit 1
-fi
 
 # Authenticate
 if [ -n "${TS_AUTHKEY}" ]; then
