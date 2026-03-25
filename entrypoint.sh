@@ -29,13 +29,7 @@ done
 # Authenticate
 if [ -n "${TS_AUTHKEY}" ]; then
   echo "[ts-proxy] Authenticating with tailnet..."
-  name="ts-proxy-$(hostname)"
-  # Check if $name isn't too long for Tailscale (max 63 chars)
-  if [ ${#name} -gt 63 ]; then
-    echo "[ts-proxy] Hostname ${name} is too long for Tailscale, truncating to 60 chars."
-    name=$(echo "${name}" | cut -c1-60)
-  fi
-  tailscale up --accept-routes --authkey="${TS_AUTHKEY}" --hostname="${name}"
+  tailscale up --accept-routes --authkey="${TS_AUTHKEY}" --hostname="ts-proxy"
 else
   echo "[ts-proxy] No TS_AUTHKEY set – assuming state dir has existing session"
   tailscale up --accept-routes
