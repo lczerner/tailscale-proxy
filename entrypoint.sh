@@ -17,9 +17,11 @@ tailscaled \
 
 TAILSCALED_PID=$!
 
-# Wait for the socket to be ready
+# Wait for the socket to be ready. If Tailscale wasn't
+# authenticated before, this will never succeed. That's ok
+# at most we will wait 10 seconds before proceeding to the authentication step.
 echo "[ts-proxy] Waiting for tailscaled to be ready..."
-for i in $(seq 1 30); do
+for i in $(seq 1 10); do
   tailscale status &>/dev/null && break
   sleep 1
 done
