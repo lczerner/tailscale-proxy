@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -z "${TS_DEST_HOST}" ]; then
+  echo "[ts-proxy] TS_DEST_HOST is required but not set, exiting."
+  exit 1
+fi
+
 echo "[ts-proxy] Starting Tailscale in userspace mode..."
 
 # Start tailscaled with userspace networking
