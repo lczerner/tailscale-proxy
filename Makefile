@@ -6,6 +6,9 @@ LISTEN_PORT := 8080
 build:
 	podman build -t $(IMAGE) .
 
+rebuild:
+	podman build --no-cache -t $(IMAGE) .
+
 run:
 	@test -f .env || (echo "ERROR: .env file not found"; exit 1)
 	podman run --env-file ./.env --rm -it \
