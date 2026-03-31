@@ -49,3 +49,154 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  integration-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check secrets are set
+        run: |
+          if [ -z "${{ secrets.TS_OAUTH_CLIENT_ID }}" ]; then
+            echo "::error::TS_OAUTH_CLIENT_ID is empty"
+          else
+            echo "TS_OAUTH_CLIENT_ID is set"
+          fi
+          if [ -z "${{ secrets.TS_OAUTH_SECRET }}" ]; then
+            echo "::error::TS_OAUTH_SECRET is empty"
+          else
+            echo "TS_OAUTH_SECRET is set"
+          fi
+
+      - uses: actions/checkout@v4
+
+
+      # Build a local single-platform image for testing; avoids registry dependency
+      # so this job runs on both PRs and master pushes
+      - name: Build test image
+        run: docker build -t proxy-test-image .
+
+      # Connect this CI runner to the tailnet so it becomes a reachable tailnet node
+      - name: Connect runner to Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:testing
+
+      - name: Generate ephemeral auth key for container
+        id: tskey
+        run: |
+          # Exchange OAuth credentials for an access token first
+          TOKEN=$(curl -s --request POST \
+            --url https://api.tailscale.com/api/v2/oauth/token \
+            --data "client_id=${{ secrets.TS_OAUTH_CLIENT_ID }}" \
+            --data "client_secret=${{ secrets.TS_OAUTH_SECRET }}" \
+            | jq -r '.access_token')
+
+          echo "Token acquired: $([ -n "$TOKEN" ] && echo yes || echo no)"
+
+          # Now use that token to create the auth key
+          RESPONSE=$(curl -s --request POST \
+            --url https://api.tailscale.com/api/v2/tailnet/-/keys \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "capabilities": {
+                "devices": {
+                  "create": {
+                    "reusable": false,
+                    "ephemeral": true,
+                    "preauthorized": true,
+                    "tags": ["tag:testing"]
+                  }
+                }
+              },
+              "expirySeconds": 300
+            }')
+
+          KEY=$(echo "$RESPONSE" | jq -r '.key')
+          echo "Auth key generated: $([ -n "$KEY" ] && echo yes || echo no)"
+
+          if [ -z "$KEY" ] || [ "$KEY" = "null" ]; then
+            echo "::error::Failed to generate Tailscale auth key"
+            exit 1
+          fi
+
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> $GITHUB_OUTPUT
+
+      # Start a minimal HTTP server on the runner; it listens on 0.0.0.0 so it is
+      # reachable via the runner's Tailscale IP (100.x.x.x)
+      - name: Start test HTTP server on runner
+        run: |
+          python3 -c "
+          import http.server
+          class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+              self.send_response(200)
+              self.end_headers()
+              self.wfile.write(b'tailscale-proxy-test-ok')
+            def log_message(self, *args): pass
+          http.server.HTTPServer(('', 9999), H).serve_forever()
+          " &
+          echo $! > /tmp/test-server.pid
+          sleep 1
+          curl -sf http://localhost:9999/ || { echo "test server failed to start"; exit 1; }
+
+      # Resolve the runner's MagicDNS hostname so the proxy container can route to it
+      - name: Get runner's tailnet hostname
+        id: tailnet
+        run: |
+          HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+          echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
+          echo "Runner tailnet hostname: $HOSTNAME"
+
+      # Run the locally built image; its tailscaled joins the tailnet with an ephemeral
+      # key and socat routes localhost:8080 → SOCKS5 → runner:9999 through Tailscale
+      - name: Start proxy container
+        run: |
+          docker run -d --name proxy-test \
+            -e TS_AUTHKEY=${{ steps.tskey.outputs.key }} \
+            -e TS_DEST_HOST=${{ steps.tailnet.outputs.hostname }} \
+            -e TS_DEST_PORT=9999 \
+            -e LISTEN_PORT=8080 \
+            -p 8080:8080 \
+            proxy-test-image
+
+      # Poll until the proxy responds (tailscaled auth + socat startup can take ~20s)
+      - name: Wait for proxy to be ready
+        run: |
+          echo "Waiting for proxy to become ready (up to 90s)..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/ >/dev/null 2>&1; then
+              echo "Proxy ready after $((i * 3))s"
+              exit 0
+            fi
+            echo "  attempt $i/30..."
+            sleep 3
+          done
+          echo "Timed out after 90s"
+          docker logs proxy-test
+          exit 1
+
+      # Verify the response came from our test server, confirming the full tunnel works
+      - name: Verify end-to-end connectivity
+        run: |
+          RESPONSE=$(curl -sf http://localhost:8080/)
+          if [ "$RESPONSE" = "tailscale-proxy-test-ok" ]; then
+            echo "PASS: response proxied correctly through Tailscale tunnel"
+          else
+            echo "FAIL: unexpected response: '$RESPONSE'"
+            docker logs proxy-test
+            exit 1
+          fi
+
+      - name: Show proxy logs
+        if: always()
+        run: docker logs proxy-test 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop proxy-test 2>/dev/null || true
+          docker rm proxy-test 2>/dev/null || true
+          kill "$(cat /tmp/test-server.pid 2>/dev/null)" 2>/dev/null || true
