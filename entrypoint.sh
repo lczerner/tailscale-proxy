@@ -10,6 +10,36 @@ TS_SOCKS5_ADDR="${TS_SOCKS5_ADDR:-localhost:1055}"
 LISTEN_PORT="${LISTEN_PORT:-80}"
 TS_DEST_PORT="${TS_DEST_PORT:-80}"
 
+TAILSCALED_PID=""
+SOCAT_PID=""
+UP_PID=""
+
+# shellcheck disable=SC2317  # invoked via trap
+shutdown() {
+  echo "[ts-proxy] Termination signal received, shutting down..."
+  trap - TERM INT
+  if [ -n "$SOCAT_PID" ]; then
+    kill -TERM "$SOCAT_PID" 2>/dev/null || true
+  fi
+  if [ -n "$TAILSCALED_PID" ]; then
+    kill -TERM "$TAILSCALED_PID" 2>/dev/null || true
+  fi
+  if [ -n "$UP_PID" ]; then
+    kill -TERM "$UP_PID" 2>/dev/null || true
+  fi
+  # Bound the wait so a child that ignores SIGTERM cannot hang shutdown;
+  # the container runtime's kill timer stays the last resort.
+  for _ in {1..50}; do
+    kill -0 "$SOCAT_PID" 2>/dev/null || \
+      kill -0 "$TAILSCALED_PID" 2>/dev/null || \
+      kill -0 "$UP_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  echo "[ts-proxy] Shutdown complete."
+  exit 0
+}
+trap shutdown TERM INT
+
 echo "[ts-proxy] Starting Tailscale in userspace mode..."
 
 # Start tailscaled with userspace networking
