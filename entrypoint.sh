@@ -103,8 +103,23 @@ socat --experimental \
 
 SOCAT_PID=$!
 
-# Keep container alive; exit if either process dies
-wait -n $TAILSCALED_PID $SOCAT_PID
-EXIT_CODE=$?
-echo "[ts-proxy] A child process exited with code ${EXIT_CODE}, shutting down."
-exit ${EXIT_CODE}
+# Keep container alive; exit with the failed child's code if either dies
+EXIT_CODE=0
+wait -n "$TAILSCALED_PID" "$SOCAT_PID" || EXIT_CODE=$?
+
+if ! kill -0 "$TAILSCALED_PID" 2>/dev/null; then
+  echo "[ts-proxy] tailscaled exited with code ${EXIT_CODE}, shutting down."
+elif ! kill -0 "$SOCAT_PID" 2>/dev/null; then
+  echo "[ts-proxy] socat exited with code ${EXIT_CODE}, shutting down."
+fi
+
+# Stop the surviving child for a clean shutdown.
+if [ -n "$SOCAT_PID" ]; then
+  kill -TERM "$SOCAT_PID" 2>/dev/null || true
+fi
+if [ -n "$TAILSCALED_PID" ]; then
+  kill -TERM "$TAILSCALED_PID" 2>/dev/null || true
+fi
+wait 2>/dev/null || true
+
+exit "${EXIT_CODE}"
