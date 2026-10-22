@@ -51,12 +51,18 @@ tailscaled \
 
 TAILSCALED_PID=$!
 
-# Wait for the socket to be ready. If Tailscale wasn't
-# authenticated before, this will never succeed. That's ok
-# at most we will wait 10 seconds before proceeding to the authentication step.
+# Wait for the tailscaled local API socket to answer. "tailscale status"
+# fails while the backend is in NeedsLogin, so look for the daemon to
+# respond with JSON at all - authentication is not required to get here.
 echo "[ts-proxy] Waiting for tailscaled to be ready..."
-for i in $(seq 1 10); do
-  tailscale status &>/dev/null && break
+for _ in {1..10}; do
+  # Read the whole payload before matching: "grep -q" could otherwise
+  # SIGPIPE tailscale mid-write and read the match as a failure.
+  status_out="$(tailscale status --json 2>/dev/null || true)"
+  if grep -q '"BackendState"' <<<"$status_out"; then
+    echo "[ts-proxy] tailscaled is ready."
+    break
+  fi
   sleep 1
 done
 
