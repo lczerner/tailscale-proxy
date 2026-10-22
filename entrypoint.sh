@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ -z "${TS_DEST_HOST}" ]; then
+if [ -z "${TS_DEST_HOST:-}" ]; then
   echo "[ts-proxy] TS_DEST_HOST is required but not set, exiting."
   exit 1
 fi
+
+TS_SOCKS5_ADDR="${TS_SOCKS5_ADDR:-localhost:1055}"
+LISTEN_PORT="${LISTEN_PORT:-80}"
+TS_DEST_PORT="${TS_DEST_PORT:-80}"
 
 echo "[ts-proxy] Starting Tailscale in userspace mode..."
 
