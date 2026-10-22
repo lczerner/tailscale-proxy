@@ -66,17 +66,34 @@ for _ in {1..10}; do
   sleep 1
 done
 
-# Authenticate
-if [ -n "${TS_AUTHKEY}" ]; then
+# Run "tailscale up" in the background so a termination signal during
+# authentication is handled immediately instead of being deferred until
+# the command returns.
+if [ -n "${TS_AUTHKEY:-}" ]; then
   echo "[ts-proxy] Authenticating with tailnet..."
-  tailscale up --accept-routes --authkey="${TS_AUTHKEY}" --hostname="ts-proxy"
+  tailscale up --accept-routes --authkey="${TS_AUTHKEY}" --hostname="ts-proxy" &
+  UP_PID=$!
 else
-  echo "[ts-proxy] No TS_AUTHKEY set – assuming state dir has existing session"
-  tailscale up --accept-routes
+  echo "[ts-proxy] No TS_AUTHKEY set – using existing session from state dir if present."
+  # With no auth key an interactive login prompt would block forever; give
+  # an existing session a minute to come up, then fail with instructions.
+  timeout 60 tailscale up --accept-routes &
+  UP_PID=$!
+fi
+
+if ! wait "$UP_PID"; then
+  echo "[ts-proxy] Failed to connect to tailnet." >&2
+  if [ -z "${TS_AUTHKEY:-}" ]; then
+    echo "[ts-proxy] No usable Tailscale session in the state dir and TS_AUTHKEY is not set." >&2
+    echo "[ts-proxy] Set TS_AUTHKEY to authenticate this container." >&2
+  else
+    echo "[ts-proxy] Check TS_AUTHKEY: is it valid, unexpired and reusable?" >&2
+  fi
+  exit 1
 fi
 
 echo "[ts-proxy] Connected to tailnet."
-tailscale status
+tailscale status || true
 
 # Forward 0.0.0.0:LISTEN_PORT to tailnet service via SOCKS5
 socat --experimental \
