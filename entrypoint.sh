@@ -12,6 +12,18 @@ TS_SOCKS5_ADDR="${TS_SOCKS5_ADDR:-localhost:1055}"
 LISTEN_PORT="${LISTEN_PORT:-80}"
 TS_DEST_PORT="${TS_DEST_PORT:-80}"
 
+# Reject non-numeric or out-of-range ports here rather than letting
+# socat fail later with a parser error in the middle of the address.
+# The regex is length-bounded so absurdly long digit strings cannot
+# overflow the integer comparisons below into "integer expression
+# expected" noise and a false pass.
+for port in "$LISTEN_PORT" "$TS_DEST_PORT"; do
+  if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    echo "[ts-proxy] Invalid port number: '$port' (must be 1-65535), exiting."
+    exit 1
+  fi
+done
+
 TAILSCALED_PID=""
 SOCAT_PID=""
 UP_PID=""
