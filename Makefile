@@ -4,10 +4,10 @@ LISTEN_PORT := 8080
 .PHONY: build run
 
 build:
-	podman build -t $(IMAGE) .
+	podman build --format docker -t $(IMAGE) .
 
 rebuild:
-	podman build --no-cache -t $(IMAGE) .
+	podman build --format docker --no-cache -t $(IMAGE) .
 
 run:
 	@test -f .env || (echo "ERROR: .env file not found"; exit 1)
