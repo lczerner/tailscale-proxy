@@ -7,6 +7,7 @@ if [ -z "${TS_DEST_HOST:-}" ]; then
 fi
 
 TS_HOSTNAME="${TS_HOSTNAME:-ts-proxy}"
+TS_BIND_ADDR="${TS_BIND_ADDR:-0.0.0.0}"
 TS_SOCKS5_ADDR="${TS_SOCKS5_ADDR:-localhost:1055}"
 LISTEN_PORT="${LISTEN_PORT:-80}"
 TS_DEST_PORT="${TS_DEST_PORT:-80}"
@@ -67,6 +68,13 @@ for _ in {1..10}; do
   sleep 1
 done
 
+# Fail fast if the daemon itself died instead of stumbling into a
+# confusing "tailscale up" error below.
+if ! kill -0 "$TAILSCALED_PID" 2>/dev/null; then
+  echo "[ts-proxy] tailscaled exited during startup, exiting."
+  exit 1
+fi
+
 up_args=(--hostname="${TS_HOSTNAME}")
 if [ "${TS_ACCEPT_ROUTES:-}" = "1" ] || [ "${TS_ACCEPT_ROUTES:-}" = "true" ]; then
   echo "[ts-proxy] Accepting tailnet subnet routes (TS_ACCEPT_ROUTES)."
@@ -102,10 +110,11 @@ fi
 echo "[ts-proxy] Connected to tailnet."
 tailscale status || true
 
-# Forward 0.0.0.0:LISTEN_PORT to tailnet service via SOCKS5
+# Forward the listen address to the tailnet service via SOCKS5
+echo "[ts-proxy] Forwarding ${TS_BIND_ADDR}:${LISTEN_PORT} -> ${TS_DEST_HOST}:${TS_DEST_PORT} via SOCKS5..."
 socat --experimental \
-  TCP-LISTEN:${LISTEN_PORT},bind=0.0.0.0,reuseaddr,fork \
-  SOCKS5-CONNECT:${TS_SOCKS5_ADDR}:${TS_DEST_HOST}:${TS_DEST_PORT} \
+  "TCP-LISTEN:${LISTEN_PORT},bind=${TS_BIND_ADDR},reuseaddr,fork" \
+  "SOCKS5-CONNECT:${TS_SOCKS5_ADDR}:${TS_DEST_HOST}:${TS_DEST_PORT}" \
   &
 
 SOCAT_PID=$!
