@@ -70,6 +70,12 @@ The `tailscale-data/` volume persists the Tailscale node state so re-authenticat
 
 The listener accepts unauthenticated connections from anything that can reach the published port, and every connection is tunneled into the tailnet destination — treat the port as wide open to whoever can reach it. Publish it only on trusted networks. By default the container binds to `0.0.0.0` (all interfaces); set `TS_BIND_ADDR` to restrict it, e.g. `TS_BIND_ADDR=127.0.0.1` or the address of a specific interface.
 
+## TCP only, no keepalive tuning
+
+This proxy forwards **TCP connections only**. `socat` listens on a TCP socket and connects through the SOCKS5 proxy — and tailscaled's userspace SOCKS5 server itself only carries TCP. UDP protocols (DNS, QUIC, game servers, syslog, etc.) cannot be proxied this way; run such workloads with a real Tailscale installation on the host instead.
+
+Long-lived, idle TCP connections are also not kept alive deliberately: neither socat nor tailscaled's SOCKS5 path sets TCP keepalive timers here, so a connection that goes silent (no application traffic) can be dropped silently by NAT gateways, firewalls or load balancers — without an error reaching either endpoint. The tunnel itself is held open by Tailscale's own keepalives; the exposure is the leg between the client and the published port, where idle timeouts range from minutes (cloud load balancers) to hours or days (stateful firewalls), depending on the middlebox. Applications that hold idle connections open (database drivers, message brokers, SSH) should enable their own keepalive or heartbeat at the application layer; the proxy carries those transparently since they are just bytes on the TCP stream. Tuning socat/TCP keepalive options is deliberately left out to keep the container minimal — if you need it, extend the socat call in `entrypoint.sh` (e.g. `keepalive,keepidle=60,keepintvl=10` on the listen address).
+
 ## Verify it works
 
 Once the container is running you should see output similar to:
