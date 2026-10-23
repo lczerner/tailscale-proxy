@@ -1,4 +1,9 @@
-FROM alpine:latest
+# Pinned release (not :latest) and manifest-list digest so the base image
+# cannot drift and an upstream regression cannot land unannounced; the
+# digest is the multi-arch index (amd64 and arm64 both resolve from it).
+# This pins the BASE image only - apk packages still float until rebuilt.
+# Bump deliberately.
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 RUN apk add --no-cache \
     tailscale \
