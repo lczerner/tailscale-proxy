@@ -1,3 +1,19 @@
+# End-to-end test: builds the image locally, joins the runner to the tailnet,
+# and verifies that a request through the proxy reaches the test server on the
+# runner.
+#
+# Prerequisites (repo-level setup, invisible to forks):
+#   - Repository secrets TS_OAUTH_CLIENT_ID and TS_OAUTH_SECRET from a
+#     Tailscale OAuth client allowed to create auth keys.
+#   - MagicDNS must be enabled on the tailnet: the proxy container resolves
+#     the runner's MagicDNS hostname to reach the test server.
+#   - ACLs must allow devices tagged tag:testing to connect.
+#   - Fork pull requests cannot read repository secrets, so they fail at the
+#     "Check secrets are set" step by design.
+#
+# The "Build and Push Docker Image" workflow is triggered by this workflow's
+# completion and publishes only when this run succeeded for the same commit.
+
 name: Integration Test
 
 on:
@@ -15,17 +31,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check secrets are set
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
-          if [ -z "${{ secrets.TS_OAUTH_CLIENT_ID }}" ]; then
-            echo "::error::TS_OAUTH_CLIENT_ID is empty"
+          missing=0
+          if [ -z "${TS_OAUTH_CLIENT_ID:-}" ]; then
+            echo "::error::TS_OAUTH_CLIENT_ID is not set"
+            missing=1
           else
             echo "TS_OAUTH_CLIENT_ID is set"
           fi
-          if [ -z "${{ secrets.TS_OAUTH_SECRET }}" ]; then
-            echo "::error::TS_OAUTH_SECRET is empty"
+          if [ -z "${TS_OAUTH_SECRET:-}" ]; then
+            echo "::error::TS_OAUTH_SECRET is not set"
+            missing=1
           else
             echo "TS_OAUTH_SECRET is set"
           fi
+          # Fork PRs have no access to repository secrets, so they fail here
+          # by design (see the prerequisites note at the top of this file)
+          exit "$missing"
 
       - uses: actions/checkout@v4
 
@@ -45,18 +70,43 @@ jobs:
 
       - name: Generate ephemeral auth key for container
         id: tskey
+        env:
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
         run: |
-          # Exchange OAuth credentials for an access token first
-          TOKEN=$(curl -s --request POST \
-            --url https://api.tailscale.com/api/v2/oauth/token \
-            --data "client_id=${{ secrets.TS_OAUTH_CLIENT_ID }}" \
-            --data "client_secret=${{ secrets.TS_OAUTH_SECRET }}" \
-            | jq -r '.access_token')
+          set -euo pipefail
 
-          echo "Token acquired: $([ -n "$TOKEN" ] && echo yes || echo no)"
+          # Exchange OAuth credentials for an access token. Basic auth
+          # avoids the secret appearing in the workflow log (it is still a
+          # curl argv element, but the runner is ephemeral and GitHub masks
+          # it; Tailscale's token endpoint accepts RFC 6749
+          # client-credentials Basic auth). The response body is printed
+          # only when the request fails, so a successful token is never
+          # logged.
+          HTTP_CODE=$(curl -sS --retry 3 --request POST \
+            --url https://api.tailscale.com/api/v2/oauth/token \
+            --user "$TS_OAUTH_CLIENT_ID:$TS_OAUTH_SECRET" \
+            --output /tmp/ts-token.json \
+            --write-out '%{http_code}') || {
+              echo "::error::Could not reach the Tailscale OAuth token endpoint"
+              exit 1
+            }
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Tailscale OAuth token request failed with HTTP $HTTP_CODE; response body:"
+            cat /tmp/ts-token.json
+            exit 1
+          fi
+          TOKEN=$(jq -r '.access_token' /tmp/ts-token.json)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::Tailscale OAuth token response contained no access_token"
+            exit 1
+          fi
+          rm -f /tmp/ts-token.json
+          echo "::add-mask::$TOKEN"
+          echo "OAuth access token acquired"
 
           # Now use that token to create the auth key
-          RESPONSE=$(curl -s --request POST \
+          HTTP_CODE=$(curl -sS --retry 3 --request POST \
             --url https://api.tailscale.com/api/v2/tailnet/-/keys \
             --header "Authorization: Bearer $TOKEN" \
             --header "Content-Type: application/json" \
@@ -72,13 +122,22 @@ jobs:
                 }
               },
               "expirySeconds": 300
-            }')
+            }' \
+            --output /tmp/ts-key.json \
+            --write-out '%{http_code}') || {
+              echo "::error::Could not reach the Tailscale keys API"
+              exit 1
+            }
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Auth key generation failed with HTTP $HTTP_CODE; response body:"
+            cat /tmp/ts-key.json
+            exit 1
+          fi
 
-          KEY=$(echo "$RESPONSE" | jq -r '.key')
-          echo "Auth key generated: $([ -n "$KEY" ] && echo yes || echo no)"
-
+          KEY=$(jq -r '.key' /tmp/ts-key.json)
+          rm -f /tmp/ts-key.json
           if [ -z "$KEY" ] || [ "$KEY" = "null" ]; then
-            echo "::error::Failed to generate Tailscale auth key"
+            echo "::error::Auth key response contained no key"
             exit 1
           fi
 
