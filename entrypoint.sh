@@ -6,6 +6,7 @@ if [ -z "${TS_DEST_HOST:-}" ]; then
   exit 1
 fi
 
+TS_HOSTNAME="${TS_HOSTNAME:-ts-proxy}"
 TS_SOCKS5_ADDR="${TS_SOCKS5_ADDR:-localhost:1055}"
 LISTEN_PORT="${LISTEN_PORT:-80}"
 TS_DEST_PORT="${TS_DEST_PORT:-80}"
@@ -66,18 +67,20 @@ for _ in {1..10}; do
   sleep 1
 done
 
+up_args=(--hostname="${TS_HOSTNAME}" --accept-routes)
+
 # Run "tailscale up" in the background so a termination signal during
 # authentication is handled immediately instead of being deferred until
 # the command returns.
 if [ -n "${TS_AUTHKEY:-}" ]; then
   echo "[ts-proxy] Authenticating with tailnet..."
-  tailscale up --accept-routes --authkey="${TS_AUTHKEY}" --hostname="ts-proxy" &
+  tailscale up "${up_args[@]}" --authkey="${TS_AUTHKEY}" &
   UP_PID=$!
 else
   echo "[ts-proxy] No TS_AUTHKEY set – using existing session from state dir if present."
   # With no auth key an interactive login prompt would block forever; give
   # an existing session a minute to come up, then fail with instructions.
-  timeout 60 tailscale up --accept-routes &
+  timeout 60 tailscale up "${up_args[@]}" &
   UP_PID=$!
 fi
 

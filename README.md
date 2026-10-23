@@ -18,6 +18,7 @@ Other containers on the same network can then reach the tailnet service by conne
 | `TS_DEST_HOST` | _(required)_ | Hostname or Tailscale MagicDNS name of the tailnet service to proxy to. |
 | `TS_DEST_PORT` | `80` | Port on the tailnet service to connect to. |
 | `LISTEN_PORT` | `80` | Port to listen on inside the container (must match the published port). |
+| `TS_HOSTNAME` | `ts-proxy` | Node name registered in the tailnet. Set a unique name when running several instances. |
 | `TS_SOCKS5_ADDR` | `localhost:1055` | Address of the `tailscaled` SOCKS5 server. Typically does not need to be changed. |
 
 ## Container image
