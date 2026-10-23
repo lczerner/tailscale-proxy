@@ -2,6 +2,8 @@
 
 A lightweight container that bridges a [Tailscale](https://tailscale.com/) tailnet service to the local container network. It runs `tailscaled` in userspace networking mode and uses `socat` to forward a local port to a tailnet host via SOCKS5 — no Tailscale installation required on other containers.
 
+Licensed under the MIT license — see [LICENSE](LICENSE).
+
 ## How it works
 
 1. `tailscaled` starts in userspace mode, exposing a SOCKS5 proxy on `localhost:1055`
@@ -31,7 +33,7 @@ A pre-built image is available on GitHub Container Registry:
 podman pull ghcr.io/lczerner/tailscale-proxy:latest
 ```
 
-Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned release.
+`latest` follows the newest stable release. Images are published only for `v*.*.*` release tags, after the integration test has passed for that release — commits to master are tested but not published. Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned pull; every stable release also gets a `X.Y` major-minor tag (e.g. `1.0`) that tracks patch updates within the minor series. Prereleases (e.g. `v1.2.3-rc.1`) are published under their full version only and never refresh `latest`.
 
 ## Build
 
@@ -55,17 +57,24 @@ LISTEN_PORT=8080
 Then run:
 
 ```sh
+mkdir -p ./tailscale-data
 podman run --env-file ./.env --rm -it \
   -p 8080:8080 \
   -v ./tailscale-data/:/var/lib/tailscale \
   localhost/tailscaleproxy
 ```
 
-The `tailscale-data/` volume persists the Tailscale node state so re-authentication is not required on restart.
+The `tailscale-data/` volume persists the Tailscale node state so re-authentication is not required on restart. podman does not auto-create the bind-mount source directory (docker does), hence the `mkdir -p` above.
 
 ## Security
 
 The listener accepts unauthenticated connections from anything that can reach the published port, and every connection is tunneled into the tailnet destination — treat the port as wide open to whoever can reach it. Publish it only on trusted networks. By default the container binds to `0.0.0.0` (all interfaces); set `TS_BIND_ADDR` to restrict it, e.g. `TS_BIND_ADDR=127.0.0.1` or the address of a specific interface.
+
+## TCP only, no keepalive tuning
+
+This proxy forwards **TCP connections only**. `socat` listens on a TCP socket and connects through the SOCKS5 proxy — and tailscaled's userspace SOCKS5 server itself only carries TCP. UDP protocols (DNS, QUIC, game servers, syslog, etc.) cannot be proxied this way; run such workloads with a real Tailscale installation on the host instead.
+
+Long-lived, idle TCP connections are also not kept alive deliberately: neither socat nor tailscaled's SOCKS5 path sets TCP keepalive timers here, so a connection that goes silent (no application traffic) can be dropped silently by NAT gateways, firewalls or load balancers — without an error reaching either endpoint. The tunnel itself is held open by Tailscale's own keepalives; the exposure is the leg between the client and the published port, where idle timeouts range from minutes (cloud load balancers) to hours or days (stateful firewalls), depending on the middlebox. Applications that hold idle connections open (database drivers, message brokers, SSH) should enable their own keepalive or heartbeat at the application layer; the proxy carries those transparently since they are just bytes on the TCP stream. Tuning socat/TCP keepalive options is deliberately left out to keep the container minimal — if you need it, extend the socat call in `entrypoint.sh` (e.g. `keepalive,keepidle=60,keepintvl=10` on the listen address).
 
 ## Verify it works
 

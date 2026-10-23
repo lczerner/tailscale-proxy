@@ -1,23 +1,27 @@
+# SPDX-License-Identifier: MIT
 # Builds and pushes multi-arch images to GHCR.
 #
-# Gating (review finding 6): publishing happens ONLY after a completed and
-# successful "Integration Test" workflow run for the same commit. There is no
-# direct push trigger: the Integration Test workflow runs on master pushes,
-# v*.*.* tag pushes and PRs to master, and every publish (branch AND tag) is
-# triggered by its completion. That gates tag publishes by the test run of
-# that tag as well; workflow_run cannot filter on tags, so the gate step
-# inspects the triggering run instead.
+# Tag-only publishing: images are pushed ONLY for v*.*.* release tags, and
+# only after the "Integration Test" workflow has passed for that tag's
+# commit. Master pushes and PRs run the Integration Test but never publish;
+# `latest` is refreshed by every release, so the pull-by-version workflow
+# is:
+#   podman pull ghcr.io/lczerner/tailscale-proxy:X.Y.Z     # pinned
+#   podman pull ghcr.io/lczerner/tailscale-proxy:latest    # newest release
+#
+# Gating mechanism: there is no direct push trigger here. The Integration
+# Test workflow runs on master pushes, v*.*.* tag pushes and PRs to master;
+# this workflow is triggered by its completion and the gate step inspects
+# the triggering run (workflow_run cannot filter on tags): publish requires
+# the triggering run to be a push event, concluded 'success', and its
+# head_branch to be a v*.*.* tag name.
 #
 # On workflow_run, github.ref/github.sha point at the DEFAULT BRANCH, not at
 # the triggering run, so this workflow:
 #   - checks out github.event.workflow_run.head_sha (the tested commit)
-#   - requires the tested commit to still be the master head for branch
-#     publishes (head_sha == github.sha)
 #   - computes every image tag explicitly from the triggering run:
 #     metadata-action's type=semver / type=ref would read the default
-#     branch's ref (semver would never fire on tag publishes) and a
-#     github.ref-based type=raw,value=latest,enable= would wrongly fire on
-#     tag publishes too.
+#     branch's ref (semver would never fire on tag publishes)
 #
 # NOTE: the Integration Test only exercises a local single-platform (amd64)
 # build; the linux/arm64 image below is NOT tested end-to-end.
@@ -39,19 +43,18 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Only push-triggered test runs (master pushes and tag pushes) publish;
-    # PR test runs never published, as in the pre-split workflow, so skip
-    # them quietly here instead of failing every PR's follow-up run.
+    # Only push-triggered test runs can publish (tag pushes are push events);
+    # PR test runs never publish, so skip them quietly here instead of
+    # failing every PR's follow-up run.
     if: github.event.workflow_run.event == 'push'
     steps:
-      - name: Gate publish on the passing integration test
+      - name: Gate publish on a passing integration test of a release tag
         id: gate
         env:
           WR_EVENT: ${{ github.event.workflow_run.event }}
           WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          DEFAULT_BRANCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -68,73 +71,93 @@ jobs:
             exit 1
           fi
 
-          # Tag publish: the test workflow also runs on v*.*.* tag pushes,
-          # where head_branch is the tag name and head_sha the commit it
-          # points to. The gate is this run's success; head_sha is what it
-          # tested. The regex mirrors what semver (and therefore
-          # metadata-action) accepts, so empty prerelease/build
-          # identifiers like v1.0.0+ cannot reach metadata-action and
-          # produce an untagged build.
+          # The triggering run must be a release tag's own test run: on tag
+          # pushes head_branch is the tag name and head_sha the commit it
+          # points to. The regex mirrors what semver (and therefore
+          # metadata-action) accepts, so empty prerelease/build identifiers
+          # like v1.0.0+ cannot reach metadata-action and produce an
+          # untagged build. Anything else (master pushes, unexpected
+          # branches) does not publish and exits 0 quietly - master test
+          # runs are a normal, frequent occurrence.
           if [[ "$WR_HEAD_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
             # Version without the leading v, fed to metadata-action's
-            # type=semver value= below.
+            # type=semver value= below. 'latest' is handled by
+            # metadata-action's flavor latest=auto, which adds it for
+            # stable semver versions and never for prereleases.
             echo "publish=tag" >> "$GITHUB_OUTPUT"
             echo "version=${WR_HEAD_BRANCH#v}" >> "$GITHUB_OUTPUT"
             echo "Publishing image for tag $WR_HEAD_BRANCH (tested commit ${WR_HEAD_SHA:0:12})"
             exit 0
           fi
 
-          # Branch publish: the test workflow only runs on master.
-          if [ "$WR_HEAD_BRANCH" != "master" ]; then
-            echo "::error::Not publishing: Integration Test ran on unexpected branch '${WR_HEAD_BRANCH}'."
-            exit 1
-          fi
-          if [ "$WR_HEAD_SHA" != "$DEFAULT_BRANCH_SHA" ]; then
-            echo "::error::Not publishing: tested commit ${WR_HEAD_SHA:0:12} is no longer the master head (${DEFAULT_BRANCH_SHA:0:12}); master moved on while the test ran. The newer commit's own test run will publish instead."
-            exit 1
-          fi
-          echo "publish=branch" >> "$GITHUB_OUTPUT"
-          echo "Publishing image for master (tested commit ${WR_HEAD_SHA:0:12})"
+          echo "Not publishing: Integration Test ran on '${WR_HEAD_BRANCH:-unknown}', not a release tag. Only v*.*.* tag runs publish."
+          exit 0
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: steps.gate.outputs.publish == 'tag'
         with:
           # workflow_run checks out the default branch by default; pin the
           # commit the integration test actually validated
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Docker meta
+        if: steps.gate.outputs.publish == 'tag'
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          # Take ref/sha from the checked-out (tested) commit so the
-          # org.opencontainers.image.revision/created labels do not describe
-          # the default branch head that workflow_run points at
-          context: git
+          # context: git is NOT usable here: the checkout is a detached,
+          # shallow (fetch-depth: 1, no tags) clone, and metadata-action's
+          # git-context ref resolution throws "Cannot find detached HEAD
+          # ref" without a tag/branch to resolve to. The default github
+          # context is used instead, and the revision label is pinned to
+          # the commit the integration test validated (on workflow_run,
+          # github.sha points at the default branch head, not the tag).
           images: ghcr.io/${{ github.repository }}
-          # Tag entries are enabled per publish type; on workflow_run,
-          # ref-based defaults (type=ref, type=semver without value=) cannot
-          # see the triggering run's ref
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+          # On workflow_run, ref-based defaults (type=ref, type=semver
+          # without value=) cannot see the triggering run's ref, so the
+          # version and latest are computed from the gate step's outputs.
+          # flavor latest defaults to 'auto': the semver type adds 'latest'
+          # automatically for stable versions and never for prereleases -
+          # exactly "latest follows stable releases", so no raw latest
+          # entry is needed (and adding one would duplicate the tag).
           tags: |
-            type=raw,value=master,enable=${{ steps.gate.outputs.publish == 'branch' }}
-            type=raw,value=latest,enable=${{ steps.gate.outputs.publish == 'branch' }}
             type=semver,pattern={{version}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
 
+      # Fail-closed guard: tags the gate regex admits but strict semver
+      # rejects (leading zeros, e.g. v01.2.3) make metadata-action emit no
+      # tags at all - pushing untagged would be worse than failing.
+      - name: Fail if no image tags were produced
+        if: steps.gate.outputs.publish == 'tag'
+        run: |
+          if [ -z "${{ steps.meta.outputs.tags }}" ]; then
+            echo "::error::metadata-action produced no tags for version '${{ steps.gate.outputs.version }}' - refusing to push an untagged image."
+            exit 1
+          fi
+          echo "Tags to push:"
+          echo "${{ steps.meta.outputs.tags }}"
+
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        if: steps.gate.outputs.publish == 'tag'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        if: steps.gate.outputs.publish == 'tag'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        if: steps.gate.outputs.publish == 'tag'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        if: steps.gate.outputs.publish == 'tag'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           push: true
@@ -144,99 +167,3 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  integration-test:
-    needs: build
-    runs-on: ubuntu-latest
-    # Image is only pushed on non-PR events; secrets unavailable on fork PRs
-    if: github.event_name != 'pull_request'
-    steps:
-      # Connect this CI runner to the tailnet so it becomes a reachable tailnet node
-      - name: Connect runner to Tailscale
-        uses: tailscale/github-action@v3
-        with:
-          authkey: ${{ secrets.TS_CI_RUNNER_AUTHKEY }}
-
-      # Start a minimal HTTP server on the runner; it listens on 0.0.0.0 so it is
-      # reachable via the runner's Tailscale IP (100.x.x.x)
-      - name: Start test HTTP server on runner
-        run: |
-          python3 -c "
-          import http.server
-          class H(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-              self.send_response(200)
-              self.end_headers()
-              self.wfile.write(b'tailscale-proxy-test-ok')
-            def log_message(self, *args): pass
-          http.server.HTTPServer(('', 9999), H).serve_forever()
-          " &
-          echo $! > /tmp/test-server.pid
-          sleep 1
-          curl -sf http://localhost:9999/ || { echo "test server failed to start"; exit 1; }
-
-      # Resolve the runner's MagicDNS hostname so the proxy container can route to it
-      - name: Get runner's tailnet hostname
-        id: tailnet
-        run: |
-          HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-          echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
-          echo "Runner tailnet hostname: $HOSTNAME"
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Run the just-pushed image; its tailscaled joins the tailnet with an ephemeral
-      # key and socat routes localhost:8080 → SOCKS5 → runner:9999 through Tailscale
-      - name: Start proxy container
-        run: |
-          docker run -d --name proxy-test \
-            -e TS_AUTHKEY=${{ secrets.TS_CI_PROXY_AUTHKEY }} \
-            -e TS_DEST_HOST=${{ steps.tailnet.outputs.hostname }} \
-            -e TS_DEST_PORT=9999 \
-            -e LISTEN_PORT=8080 \
-            -p 8080:8080 \
-            ghcr.io/${{ github.repository }}:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
-
-      # Poll until the proxy responds (tailscaled auth + socat startup can take ~20s)
-      - name: Wait for proxy to be ready
-        run: |
-          echo "Waiting for proxy to become ready (up to 90s)..."
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8080/ >/dev/null 2>&1; then
-              echo "Proxy ready after $((i * 3))s"
-              exit 0
-            fi
-            echo "  attempt $i/30..."
-            sleep 3
-          done
-          echo "Timed out after 90s"
-          docker logs proxy-test
-          exit 1
-
-      # Verify the response came from our test server, confirming the full tunnel works
-      - name: Verify end-to-end connectivity
-        run: |
-          RESPONSE=$(curl -sf http://localhost:8080/)
-          if [ "$RESPONSE" = "tailscale-proxy-test-ok" ]; then
-            echo "PASS: response proxied correctly through Tailscale tunnel"
-          else
-            echo "FAIL: unexpected response: '$RESPONSE'"
-            docker logs proxy-test
-            exit 1
-          fi
-
-      - name: Show proxy logs
-        if: always()
-        run: docker logs proxy-test 2>/dev/null || true
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker stop proxy-test 2>/dev/null || true
-          docker rm proxy-test 2>/dev/null || true
-          kill "$(cat /tmp/test-server.pid 2>/dev/null)" 2>/dev/null || true

@@ -11,6 +11,7 @@ rebuild:
 
 run:
 	@test -f .env || (echo "ERROR: .env file not found"; exit 1)
+	@mkdir -p ./tailscale-data
 	podman run --env-file ./.env --rm -it \
 		-p $(LISTEN_PORT):$(LISTEN_PORT) \
 		-v ./tailscale-data/:/var/lib/tailscale \

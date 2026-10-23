@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # End-to-end test: builds the image locally, joins the runner to the tailnet,
 # and verifies that a request through the proxy reaches the test server on the
 # runner.
@@ -52,7 +53,7 @@ jobs:
           # by design (see the prerequisites note at the top of this file)
           exit "$missing"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
 
       # Build a local single-platform image for testing; avoids registry dependency
@@ -63,7 +64,7 @@ jobs:
 
       # Connect this CI runner to the tailnet so it becomes a reachable tailnet node
       - name: Connect runner to Tailscale
-        uses: tailscale/github-action@v3
+        uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
