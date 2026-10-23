@@ -37,6 +37,7 @@ shutdown() {
       kill -0 "$UP_PID" 2>/dev/null || break
     sleep 0.1
   done
+  [ -n "${AUTHKEY_FILE:-}" ] && rm -f "$AUTHKEY_FILE"
   echo "[ts-proxy] Shutdown complete."
   exit 0
 }
@@ -85,8 +86,26 @@ fi
 # authentication is handled immediately instead of being deferred until
 # the command returns.
 if [ -n "${TS_AUTHKEY:-}" ]; then
+  # Hand the key to "tailscale up" via a file ("--authkey=file:..."):
+  # passing it as an argument would expose it in "ps" output for as long
+  # as authentication runs. Prefer /run, then TMPDIR; the persistent
+  # state dir is last so a hard kill cannot leave the key on the volume.
+  # The key is created 0600 directly via umask - never briefly wider.
+  AUTHKEY_FILE=""
+  for cand in "/run/ts-authkey" "${TMPDIR:-/tmp}/ts-authkey.$$" "/var/lib/tailscale/.ts-authkey"; do
+    # The redirection is tried in a subshell so bash's "Permission denied"
+    # message for a failed redirect does not reach the container log.
+    if ( umask 077 && printf '%s' "$TS_AUTHKEY" > "$cand" ) 2>/dev/null; then
+      AUTHKEY_FILE="$cand"
+      break
+    fi
+  done
+  if [ -z "$AUTHKEY_FILE" ]; then
+    echo "[ts-proxy] Could not write the auth key to a temporary file, exiting." >&2
+    exit 1
+  fi
   echo "[ts-proxy] Authenticating with tailnet..."
-  tailscale up "${up_args[@]}" --authkey="${TS_AUTHKEY}" &
+  tailscale up "${up_args[@]}" --authkey="file:${AUTHKEY_FILE}" &
   UP_PID=$!
 else
   echo "[ts-proxy] No TS_AUTHKEY set – using existing session from state dir if present."
@@ -104,8 +123,12 @@ if ! wait "$UP_PID"; then
   else
     echo "[ts-proxy] Check TS_AUTHKEY: is it valid, unexpired and reusable?" >&2
   fi
+  rm -f "${AUTHKEY_FILE:-}"
   exit 1
 fi
+
+# The key file is only needed while authentication runs.
+[ -n "${AUTHKEY_FILE:-}" ] && rm -f "$AUTHKEY_FILE"
 
 echo "[ts-proxy] Connected to tailnet."
 tailscale status || true
