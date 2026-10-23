@@ -81,14 +81,11 @@ jobs:
           # runs are a normal, frequent occurrence.
           if [[ "$WR_HEAD_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
             # Version without the leading v, fed to metadata-action's
-            # type=semver value= below. Prereleases (v1.2.3-rc.1) publish
-            # their version tag but must NOT refresh 'latest' - that is
-            # reserved for stable releases.
+            # type=semver value= below. 'latest' is handled by
+            # metadata-action's flavor latest=auto, which adds it for
+            # stable semver versions and never for prereleases.
             echo "publish=tag" >> "$GITHUB_OUTPUT"
             echo "version=${WR_HEAD_BRANCH#v}" >> "$GITHUB_OUTPUT"
-            if [[ "$WR_HEAD_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "stable=true" >> "$GITHUB_OUTPUT"
-            fi
             echo "Publishing image for tag $WR_HEAD_BRANCH (tested commit ${WR_HEAD_SHA:0:12})"
             exit 0
           fi
@@ -121,12 +118,26 @@ jobs:
           # On workflow_run, ref-based defaults (type=ref, type=semver
           # without value=) cannot see the triggering run's ref, so the
           # version and latest are computed from the gate step's outputs.
-          # 'latest' follows releases: every release refreshes it, master
-          # pushes never touch it.
+          # flavor latest defaults to 'auto': the semver type adds 'latest'
+          # automatically for stable versions and never for prereleases -
+          # exactly "latest follows stable releases", so no raw latest
+          # entry is needed (and adding one would duplicate the tag).
           tags: |
             type=semver,pattern={{version}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
-            type=raw,value=latest,enable=${{ steps.gate.outputs.stable == 'true' }}
+
+      # Fail-closed guard: tags the gate regex admits but strict semver
+      # rejects (leading zeros, e.g. v01.2.3) make metadata-action emit no
+      # tags at all - pushing untagged would be worse than failing.
+      - name: Fail if no image tags were produced
+        if: steps.gate.outputs.publish == 'tag'
+        run: |
+          if [ -z "${{ steps.meta.outputs.tags }}" ]; then
+            echo "::error::metadata-action produced no tags for version '${{ steps.gate.outputs.version }}' - refusing to push an untagged image."
+            exit 1
+          fi
+          echo "Tags to push:"
+          echo "${{ steps.meta.outputs.tags }}"
 
       - name: Set up QEMU
         if: steps.gate.outputs.publish == 'tag'

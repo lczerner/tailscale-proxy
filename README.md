@@ -33,7 +33,7 @@ A pre-built image is available on GitHub Container Registry:
 podman pull ghcr.io/lczerner/tailscale-proxy:latest
 ```
 
-`latest` follows the newest stable release. Images are published only for `v*.*.*` release tags, after the integration test has passed for that release — commits to master are tested but not published. Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned pull; every release also gets a `X.Y` major-minor tag (e.g. `1.0`) that tracks patch updates within the minor series.
+`latest` follows the newest stable release. Images are published only for `v*.*.*` release tags, after the integration test has passed for that release — commits to master are tested but not published. Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned pull; every stable release also gets a `X.Y` major-minor tag (e.g. `1.0`) that tracks patch updates within the minor series. Prereleases (e.g. `v1.2.3-rc.1`) are published under their full version only and never refresh `latest`.
 
 ## Build
 
