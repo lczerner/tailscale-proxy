@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # End-to-end test: builds the image locally, joins the runner to the tailnet,
 # and verifies that a request through the proxy reaches the test server on the
 # runner.

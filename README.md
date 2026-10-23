@@ -2,6 +2,8 @@
 
 A lightweight container that bridges a [Tailscale](https://tailscale.com/) tailnet service to the local container network. It runs `tailscaled` in userspace networking mode and uses `socat` to forward a local port to a tailnet host via SOCKS5 — no Tailscale installation required on other containers.
 
+Licensed under the MIT license — see [LICENSE](LICENSE).
+
 ## How it works
 
 1. `tailscaled` starts in userspace mode, exposing a SOCKS5 proxy on `localhost:1055`

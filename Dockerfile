@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 # Pinned release (not :latest) and manifest-list digest so the base image
 # cannot drift and an upstream regression cannot land unannounced; the
 # digest is the multi-arch index (amd64 and arm64 both resolve from it).
@@ -47,5 +49,14 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
         [ "$HC_ADDR" = "0.0.0.0" ] && HC_ADDR=127.0.0.1; \
         code=$(curl -sS -I -o /dev/null -w '%{http_code}' --max-time 5 "http://${HC_ADDR}:${LISTEN_PORT}/"); \
         case "$code" in 2??|3??|4??|5??) exit 0;; *) exit 1;; esac
+
+# OCI image labels; ghcr.io/lczerner/tailscale-proxy is published by CI.
+LABEL org.opencontainers.image.title="tailscale-proxy" \
+      org.opencontainers.image.description="Bridges a Tailscale tailnet service to the local container network via userspace tailscaled and socat" \
+      org.opencontainers.image.authors="Lukáš Czerner <lukas@czerner.cz>" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/lczerner/tailscale-proxy" \
+      org.opencontainers.image.url="https://github.com/lczerner/tailscale-proxy" \
+      org.opencontainers.image.documentation="https://github.com/lczerner/tailscale-proxy#readme"
 
 ENTRYPOINT ["/entrypoint.sh"]

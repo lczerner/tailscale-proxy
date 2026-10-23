@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 # Builds and pushes multi-arch images to GHCR.
 #
 # Gating (review finding 6): publishing happens ONLY after a completed and
