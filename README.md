@@ -36,8 +36,10 @@ Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned release
 ## Build
 
 ```sh
-podman build -t tailscaleproxy .
+podman build --format docker -t tailscaleproxy .
 ```
+
+The `--format docker` flag is required: podman's default OCI image format silently drops `HEALTHCHECK`.
 
 ## Run
 
