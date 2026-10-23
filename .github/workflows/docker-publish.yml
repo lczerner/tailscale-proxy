@@ -107,11 +107,17 @@ jobs:
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          # Take ref/sha from the checked-out (tested) commit so the
-          # org.opencontainers.image.revision/created labels do not describe
-          # the default branch head that workflow_run points at
-          context: git
+          # context: git is NOT usable here: the checkout is a detached,
+          # shallow (fetch-depth: 1, no tags) clone, and metadata-action's
+          # git-context ref resolution throws "Cannot find detached HEAD
+          # ref" without a tag/branch to resolve to. The default github
+          # context is used instead, and the revision label is pinned to
+          # the commit the integration test validated (on workflow_run,
+          # github.sha points at the default branch head, not necessarily
+          # the tested commit).
           images: ghcr.io/${{ github.repository }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
           # Tag entries are enabled per publish type; on workflow_run,
           # ref-based defaults (type=ref, type=semver without value=) cannot
           # see the triggering run's ref
