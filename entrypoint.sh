@@ -67,7 +67,11 @@ for _ in {1..10}; do
   sleep 1
 done
 
-up_args=(--hostname="${TS_HOSTNAME}" --accept-routes)
+up_args=(--hostname="${TS_HOSTNAME}")
+if [ "${TS_ACCEPT_ROUTES:-}" = "1" ] || [ "${TS_ACCEPT_ROUTES:-}" = "true" ]; then
+  echo "[ts-proxy] Accepting tailnet subnet routes (TS_ACCEPT_ROUTES)."
+  up_args+=(--accept-routes)
+fi
 
 # Run "tailscale up" in the background so a termination signal during
 # authentication is handled immediately instead of being deferred until
