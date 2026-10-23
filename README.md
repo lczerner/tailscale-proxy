@@ -55,13 +55,14 @@ LISTEN_PORT=8080
 Then run:
 
 ```sh
+mkdir -p ./tailscale-data
 podman run --env-file ./.env --rm -it \
   -p 8080:8080 \
   -v ./tailscale-data/:/var/lib/tailscale \
   localhost/tailscaleproxy
 ```
 
-The `tailscale-data/` volume persists the Tailscale node state so re-authentication is not required on restart.
+The `tailscale-data/` volume persists the Tailscale node state so re-authentication is not required on restart. podman does not auto-create the bind-mount source directory (docker does), hence the `mkdir -p` above.
 
 ## Security
 
