@@ -6,7 +6,7 @@ A lightweight container that bridges a [Tailscale](https://tailscale.com/) tailn
 
 1. `tailscaled` starts in userspace mode, exposing a SOCKS5 proxy on `localhost:1055`
 2. The container authenticates to your tailnet using `TS_AUTHKEY`
-3. `socat` listens on `0.0.0.0:LISTEN_PORT` and forwards connections to `TS_DEST_HOST:TS_DEST_PORT` through the SOCKS5 proxy
+3. `socat` listens on `TS_BIND_ADDR:LISTEN_PORT` (default `0.0.0.0`) and forwards connections to `TS_DEST_HOST:TS_DEST_PORT` through the SOCKS5 proxy
 
 Other containers on the same network can then reach the tailnet service by connecting to this proxy container's exposed port.
 
@@ -20,6 +20,7 @@ Other containers on the same network can then reach the tailnet service by conne
 | `LISTEN_PORT` | `80` | Port to listen on inside the container (must match the published port). |
 | `TS_HOSTNAME` | `ts-proxy` | Node name registered in the tailnet. Set a unique name when running several instances. |
 | `TS_ACCEPT_ROUTES` | _(empty)_ | Set to `1` or `true` to accept subnet routes advertised in the tailnet. |
+| `TS_BIND_ADDR` | `0.0.0.0` | Address the listener binds to inside the container. Set to a specific interface address to restrict it. |
 | `TS_SOCKS5_ADDR` | `localhost:1055` | Address of the `tailscaled` SOCKS5 server. Typically does not need to be changed. |
 
 ## Container image
@@ -59,6 +60,10 @@ podman run --env-file ./.env --rm -it \
 ```
 
 The `tailscale-data/` volume persists the Tailscale node state so re-authentication is not required on restart.
+
+## Security
+
+The listener accepts unauthenticated connections from anything that can reach the published port, and every connection is tunneled into the tailnet destination — treat the port as wide open to whoever can reach it. Publish it only on trusted networks. By default the container binds to `0.0.0.0` (all interfaces); set `TS_BIND_ADDR` to restrict it, e.g. `TS_BIND_ADDR=127.0.0.1` or the address of a specific interface.
 
 ## Verify it works
 
