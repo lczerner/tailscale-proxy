@@ -56,9 +56,10 @@ jobs:
 
 
       # Build a local single-platform image for testing; avoids registry dependency
-      # so this job runs on both PRs and master pushes
+      # so this job runs on both PRs and master pushes. --format docker because
+      # podman's default OCI image format silently drops HEALTHCHECK (see README).
       - name: Build test image
-        run: docker build -t proxy-test-image .
+        run: podman build --format docker -t proxy-test-image .
 
       # Connect this CI runner to the tailnet so it becomes a reachable tailnet node
       - name: Connect runner to Tailscale
@@ -170,11 +171,14 @@ jobs:
           echo "Runner tailnet hostname: $HOSTNAME"
 
       # Run the locally built image; its tailscaled joins the tailnet with an ephemeral
-      # key and socat routes localhost:8080 → SOCKS5 → runner:9999 through Tailscale
+      # key and socat routes localhost:8080 → SOCKS5 → runner:9999 through Tailscale.
+      # podman runs rootless on the runner; the -p 8080:8080 publish works unprivileged.
       - name: Start proxy container
+        env:
+          TS_AUTHKEY: ${{ steps.tskey.outputs.key }}
         run: |
-          docker run -d --name proxy-test \
-            -e TS_AUTHKEY=${{ steps.tskey.outputs.key }} \
+          podman run -d --name proxy-test \
+            -e TS_AUTHKEY \
             -e TS_DEST_HOST=${{ steps.tailnet.outputs.hostname }} \
             -e TS_DEST_PORT=9999 \
             -e LISTEN_PORT=8080 \
@@ -194,7 +198,7 @@ jobs:
             sleep 3
           done
           echo "Timed out after 90s"
-          docker logs proxy-test
+          podman logs proxy-test
           exit 1
 
       # Verify the response came from our test server, confirming the full tunnel works
@@ -205,17 +209,17 @@ jobs:
             echo "PASS: response proxied correctly through Tailscale tunnel"
           else
             echo "FAIL: unexpected response: '$RESPONSE'"
-            docker logs proxy-test
+            podman logs proxy-test
             exit 1
           fi
 
       - name: Show proxy logs
         if: always()
-        run: docker logs proxy-test 2>/dev/null || true
+        run: podman logs proxy-test 2>/dev/null || true
 
       - name: Cleanup
         if: always()
         run: |
-          docker stop proxy-test 2>/dev/null || true
-          docker rm proxy-test 2>/dev/null || true
+          podman stop proxy-test 2>/dev/null || true
+          podman rm proxy-test 2>/dev/null || true
           kill "$(cat /tmp/test-server.pid 2>/dev/null)" 2>/dev/null || true
