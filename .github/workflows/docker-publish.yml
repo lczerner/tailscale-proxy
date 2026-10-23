@@ -1,9 +1,36 @@
+# Builds and pushes multi-arch images to GHCR.
+#
+# Gating (review finding 6): publishing happens ONLY after a completed and
+# successful "Integration Test" workflow run for the same commit. There is no
+# direct push trigger: the Integration Test workflow runs on master pushes,
+# v*.*.* tag pushes and PRs to master, and every publish (branch AND tag) is
+# triggered by its completion. That gates tag publishes by the test run of
+# that tag as well; workflow_run cannot filter on tags, so the gate step
+# inspects the triggering run instead.
+#
+# On workflow_run, github.ref/github.sha point at the DEFAULT BRANCH, not at
+# the triggering run, so this workflow:
+#   - checks out github.event.workflow_run.head_sha (the tested commit)
+#   - requires the tested commit to still be the master head for branch
+#     publishes (head_sha == github.sha)
+#   - computes every image tag explicitly from the triggering run:
+#     metadata-action's type=semver / type=ref would read the default
+#     branch's ref (semver would never fire on tag publishes) and a
+#     github.ref-based type=raw,value=latest,enable= would wrongly fire on
+#     tag publishes too.
+#
+# NOTE: the Integration Test only exercises a local single-platform (amd64)
+# build; the linux/arm64 image below is NOT tested end-to-end.
+#
+# NOTE: workflow_run only triggers from the version of this file on the
+# default branch (edits take effect after merge).
+
 name: Build and Push Docker Image
 
 on:
-  push:
-    branches: [master]
-    tags: ['v*.*.*']
+  workflow_run:
+    workflows: ["Integration Test"]
+    types: [completed]
 
 permissions:
   contents: read
@@ -12,19 +39,89 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Only push-triggered test runs (master pushes and tag pushes) publish;
+    # PR test runs never published, as in the pre-split workflow, so skip
+    # them quietly here instead of failing every PR's follow-up run.
+    if: github.event.workflow_run.event == 'push'
     steps:
+      - name: Gate publish on the passing integration test
+        id: gate
+        env:
+          WR_EVENT: ${{ github.event.workflow_run.event }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          DEFAULT_BRANCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Unreachable while the job-level 'if' filters on the same event,
+          # but fail loudly rather than push an untagged image if it ever
+          # stops holding
+          if [ "$WR_EVENT" != "push" ]; then
+            echo "::error::Not publishing: Integration Test was triggered by '${WR_EVENT}'."
+            exit 1
+          fi
+
+          if [ "$WR_CONCLUSION" != "success" ]; then
+            echo "::error::Not publishing: Integration Test for ${WR_HEAD_BRANCH:-unknown} (${WR_HEAD_SHA:0:12}) concluded '${WR_CONCLUSION}' instead of 'success'."
+            exit 1
+          fi
+
+          # Tag publish: the test workflow also runs on v*.*.* tag pushes,
+          # where head_branch is the tag name and head_sha the commit it
+          # points to. The gate is this run's success; head_sha is what it
+          # tested. The regex mirrors what semver (and therefore
+          # metadata-action) accepts, so empty prerelease/build
+          # identifiers like v1.0.0+ cannot reach metadata-action and
+          # produce an untagged build.
+          if [[ "$WR_HEAD_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            # Version without the leading v, fed to metadata-action's
+            # type=semver value= below.
+            echo "publish=tag" >> "$GITHUB_OUTPUT"
+            echo "version=${WR_HEAD_BRANCH#v}" >> "$GITHUB_OUTPUT"
+            echo "Publishing image for tag $WR_HEAD_BRANCH (tested commit ${WR_HEAD_SHA:0:12})"
+            exit 0
+          fi
+
+          # Branch publish: the test workflow only runs on master.
+          if [ "$WR_HEAD_BRANCH" != "master" ]; then
+            echo "::error::Not publishing: Integration Test ran on unexpected branch '${WR_HEAD_BRANCH}'."
+            exit 1
+          fi
+          if [ "$WR_HEAD_SHA" != "$DEFAULT_BRANCH_SHA" ]; then
+            echo "::error::Not publishing: tested commit ${WR_HEAD_SHA:0:12} is no longer the master head (${DEFAULT_BRANCH_SHA:0:12}); master moved on while the test ran. The newer commit's own test run will publish instead."
+            exit 1
+          fi
+          echo "publish=branch" >> "$GITHUB_OUTPUT"
+          echo "Publishing image for master (tested commit ${WR_HEAD_SHA:0:12})"
+
       - uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the default branch by default; pin the
+          # commit the integration test actually validated
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
+          # Take ref/sha from the checked-out (tested) commit so the
+          # org.opencontainers.image.revision/created labels do not describe
+          # the default branch head that workflow_run points at
+          context: git
           images: ghcr.io/${{ github.repository }}
+          # Tag entries are enabled per publish type; on workflow_run,
+          # ref-based defaults (type=ref, type=semver without value=) cannot
+          # see the triggering run's ref
           tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=master,enable=${{ steps.gate.outputs.publish == 'branch' }}
+            type=raw,value=latest,enable=${{ steps.gate.outputs.publish == 'branch' }}
+            type=semver,pattern={{version}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -43,6 +140,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # arm64 is built but never tested end-to-end (see header note)
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
