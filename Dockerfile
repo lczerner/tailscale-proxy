@@ -16,9 +16,10 @@ ENV TS_AUTHKEY=""
 # The tailnet service DNS and port
 ENV TS_DEST_HOST=""
 ENV TS_DEST_PORT="80"
-# Port to expose
-ARG LISTEN_PORT=80
-ENV LISTEN_PORT=${LISTEN_PORT}
+# Port the proxy listens on inside the container; EXPOSE is documentation
+# only - the listener actually binds whatever LISTEN_PORT is set to at
+# runtime, so override both together.
+ENV LISTEN_PORT="80"
 # Tailscale userspace SOCKS5 proxy (default)
 ENV TS_SOCKS5_ADDR="localhost:1055"
 # Tailscale node name; set a unique one when running several instances
@@ -31,7 +32,8 @@ ENV TS_BIND_ADDR="0.0.0.0"
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE ${LISTEN_PORT}
+# Documentation for tools and humans; -p/--publish decides actual exposure.
+EXPOSE 80
 
 # Health check: exercise the full path (listener -> socat -> SOCKS5 ->
 # tailnet) with a HEAD request. Any HTTP response (2xx-5xx) counts as
