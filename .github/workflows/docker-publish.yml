@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Builds and pushes multi-arch images to GHCR.
+# Publishes a new release to GHCR.
 #
 # Tag-only publishing: images are pushed ONLY for v*.*.* release tags, and
 # only after the "Integration Test" workflow has passed for that tag's
@@ -8,23 +8,18 @@
 # is:
 #   podman pull ghcr.io/lczerner/tailscale-proxy:X.Y.Z     # pinned
 #   podman pull ghcr.io/lczerner/tailscale-proxy:latest    # newest release
+# Between releases, rebuild.yml refreshes the newest release's packages.
 #
 # Gating mechanism: there is no direct push trigger here. The Integration
 # Test workflow runs on master pushes, v*.*.* tag pushes and PRs to master;
-# this workflow is triggered by its completion and the gate step inspects
+# this workflow is triggered by its completion and the gate job inspects
 # the triggering run (workflow_run cannot filter on tags): publish requires
 # the triggering run to be a push event, concluded 'success', and its
 # head_branch to be a v*.*.* tag name.
 #
 # On workflow_run, github.ref/github.sha point at the DEFAULT BRANCH, not at
-# the triggering run, so this workflow:
-#   - checks out github.event.workflow_run.head_sha (the tested commit)
-#   - computes every image tag explicitly from the triggering run:
-#     metadata-action's type=semver / type=ref would read the default
-#     branch's ref (semver would never fire on tag publishes)
-#
-# NOTE: the Integration Test only exercises a local single-platform (amd64)
-# build; the linux/arm64 image below is NOT tested end-to-end.
+# the triggering run, so the tested commit (workflow_run.head_sha) and the
+# version are handed to publish-image.yml explicitly.
 #
 # NOTE: workflow_run only triggers from the version of this file on the
 # default branch (edits take effect after merge).
@@ -38,15 +33,17 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build:
+  gate:
     runs-on: ubuntu-latest
     # Only push-triggered test runs can publish (tag pushes are push events);
     # PR test runs never publish, so skip them quietly here instead of
     # failing every PR's follow-up run.
     if: github.event.workflow_run.event == 'push'
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+      version: ${{ steps.gate.outputs.version }}
     steps:
       - name: Gate publish on a passing integration test of a release tag
         id: gate
@@ -80,10 +77,7 @@ jobs:
           # branches) does not publish and exits 0 quietly - master test
           # runs are a normal, frequent occurrence.
           if [[ "$WR_HEAD_BRANCH" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-            # Version without the leading v, fed to metadata-action's
-            # type=semver value= below. 'latest' is handled by
-            # metadata-action's flavor latest=auto, which adds it for
-            # stable semver versions and never for prereleases.
+            # Version without the leading v, handed to publish-image.yml.
             echo "publish=tag" >> "$GITHUB_OUTPUT"
             echo "version=${WR_HEAD_BRANCH#v}" >> "$GITHUB_OUTPUT"
             echo "Publishing image for tag $WR_HEAD_BRANCH (tested commit ${WR_HEAD_SHA:0:12})"
@@ -93,77 +87,17 @@ jobs:
           echo "Not publishing: Integration Test ran on '${WR_HEAD_BRANCH:-unknown}', not a release tag. Only v*.*.* tag runs publish."
           exit 0
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: steps.gate.outputs.publish == 'tag'
-        with:
-          # workflow_run checks out the default branch by default; pin the
-          # commit the integration test actually validated
-          ref: ${{ github.event.workflow_run.head_sha }}
-
-      - name: Docker meta
-        if: steps.gate.outputs.publish == 'tag'
-        id: meta
-        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
-        with:
-          # context: git is NOT usable here: the checkout is a detached,
-          # shallow (fetch-depth: 1, no tags) clone, and metadata-action's
-          # git-context ref resolution throws "Cannot find detached HEAD
-          # ref" without a tag/branch to resolve to. The default github
-          # context is used instead, and the revision label is pinned to
-          # the commit the integration test validated (on workflow_run,
-          # github.sha points at the default branch head, not the tag).
-          images: ghcr.io/${{ github.repository }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
-          # On workflow_run, ref-based defaults (type=ref, type=semver
-          # without value=) cannot see the triggering run's ref, so the
-          # version and latest are computed from the gate step's outputs.
-          # flavor latest defaults to 'auto': the semver type adds 'latest'
-          # automatically for stable versions and never for prereleases -
-          # exactly "latest follows stable releases", so no raw latest
-          # entry is needed (and adding one would duplicate the tag).
-          tags: |
-            type=semver,pattern={{version}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.gate.outputs.version }},enable=${{ steps.gate.outputs.publish == 'tag' }}
-
-      # Fail-closed guard: tags the gate regex admits but strict semver
-      # rejects (leading zeros, e.g. v01.2.3) make metadata-action emit no
-      # tags at all - pushing untagged would be worse than failing.
-      - name: Fail if no image tags were produced
-        if: steps.gate.outputs.publish == 'tag'
-        run: |
-          if [ -z "${{ steps.meta.outputs.tags }}" ]; then
-            echo "::error::metadata-action produced no tags for version '${{ steps.gate.outputs.version }}' - refusing to push an untagged image."
-            exit 1
-          fi
-          echo "Tags to push:"
-          echo "${{ steps.meta.outputs.tags }}"
-
-      - name: Set up QEMU
-        if: steps.gate.outputs.publish == 'tag'
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-
-      - name: Set up Docker Buildx
-        if: steps.gate.outputs.publish == 'tag'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GHCR
-        if: steps.gate.outputs.publish == 'tag'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        if: steps.gate.outputs.publish == 'tag'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # arm64 is built but never tested end-to-end (see header note)
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  publish:
+    needs: gate
+    if: needs.gate.outputs.publish == 'tag'
+    # A release and a scheduled rebuild must not push the same tags at once.
+    concurrency:
+      group: publish-image
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      ref: ${{ github.event.workflow_run.head_sha }}
+      version: ${{ needs.gate.outputs.version }}

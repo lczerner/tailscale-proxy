@@ -35,6 +35,8 @@ podman pull ghcr.io/lczerner/tailscale-proxy:latest
 
 `latest` follows the newest stable release. Images are published only for `v*.*.*` release tags, after the integration test has passed for that release — commits to master are tested but not published. Replace `latest` with a specific version tag (e.g. `1.0.0`) for a pinned pull; every stable release also gets a `X.Y` major-minor tag (e.g. `1.0`) that tracks patch updates within the minor series. Prereleases (e.g. `v1.2.3-rc.1`) are published under their full version only and never refresh `latest`.
 
+Between releases, the newest stable release is rebuilt weekly with current Alpine package updates (including tailscale), and its `X.Y.Z`, `X.Y` and `latest` tags are republished after the integration test passes. A version tag therefore identifies the code, not a byte-identical image; pull by digest if you need one that never changes.
+
 ## Build
 
 ```sh

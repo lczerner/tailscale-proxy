@@ -14,6 +14,7 @@
 #
 # The "Build and Push Docker Image" workflow is triggered by this workflow's
 # completion and publishes only when this run succeeded for the same commit.
+# rebuild.yml calls it directly (workflow_call) to test a release tag.
 
 name: Integration Test
 
@@ -23,6 +24,13 @@ on:
     tags: ['v*.*.*']
   pull_request:
     branches: [master]
+  workflow_call:
+    inputs:
+      ref:
+        description: "Tag or commit to test (default: the triggering commit)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -56,6 +64,8 @@ jobs:
           exit "$missing"
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
 
 
       # Build a local single-platform image for testing; avoids registry dependency
