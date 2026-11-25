@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: MIT
+# Reusable: builds the multi-arch image from one release and pushes it to
+# GHCR as X.Y.Z, X.Y and (for stable versions) latest. Called by
+# docker-publish.yml for new releases and by rebuild.yml to refresh the
+# newest release. Callers must gate on a passing integration test.
+#
+# NOTE: the Integration Test only exercises a local single-platform (amd64)
+# build; the linux/arm64 image below is NOT tested end-to-end.
+
+name: Publish Image
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Tag or commit to build"
+        type: string
+        required: true
+      version:
+        description: "Version without the leading v, e.g. 1.2.3"
+        type: string
+        required: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Resolve commit
+        id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          # context: git is NOT usable here: the checkout is a detached,
+          # shallow (fetch-depth: 1, no tags) clone, and metadata-action's
+          # git-context ref resolution throws "Cannot find detached HEAD
+          # ref" without a tag/branch to resolve to. The default github
+          # context is used instead, and the revision label is pinned to
+          # the commit actually built (on workflow_run and schedule,
+          # github.sha points at the default branch head, not the tag).
+          images: ghcr.io/${{ github.repository }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.rev.outputs.sha }}
+          # Ref-based defaults (type=ref, type=semver without value=)
+          # cannot see the release being built, so the version is passed
+          # in. flavor latest defaults to 'auto': the semver type adds
+          # 'latest' for stable versions and never for prereleases.
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }}
+
+      # Fail-closed guard: versions strict semver rejects (leading zeros,
+      # e.g. 01.2.3) make metadata-action emit no tags at all - pushing
+      # untagged would be worse than failing.
+      - name: Fail if no image tags were produced
+        run: |
+          if [ -z "${{ steps.meta.outputs.tags }}" ]; then
+            echo "::error::metadata-action produced no tags for version '${{ inputs.version }}' - refusing to push an untagged image."
+            exit 1
+          fi
+          echo "Tags to push:"
+          echo "${{ steps.meta.outputs.tags }}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No build cache: a cached "apk upgrade/add" layer would make a
+      # rebuild republish the old packages.
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # arm64 is built but never tested end-to-end (see header note)
+          platforms: linux/amd64,linux/arm64

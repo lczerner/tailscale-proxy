@@ -3,11 +3,12 @@
 # Pinned release (not :latest) and manifest-list digest so the base image
 # cannot drift and an upstream regression cannot land unannounced; the
 # digest is the multi-arch index (amd64 and arm64 both resolve from it).
-# This pins the BASE image only - apk packages still float until rebuilt.
+# Packages, including the base image's own, are upgraded at build time, so
+# the weekly rebuild (rebuild.yml) ships Alpine fixes without a digest bump.
 # Bump deliberately.
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
-RUN apk add --no-cache \
+RUN apk upgrade --no-cache && apk add --no-cache \
     tailscale \
     socat \
     curl \

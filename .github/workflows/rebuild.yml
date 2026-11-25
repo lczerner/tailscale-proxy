@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: MIT
+# Rebuilds the newest stable release with current Alpine packages and
+# republishes its tags (X.Y.Z, X.Y, latest), so package fixes ship without
+# a new release. The release's code is built, never master. Publishes only
+# if the integration test passes for that release.
+
+name: Rebuild Release
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Find the newest stable release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+            | sed 's|^refs/tags/||' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -n 1 || true)
+          if [ -z "$tag" ]; then
+            echo "::error::No stable v*.*.* release tag found."
+            exit 1
+          fi
+          echo "Rebuilding $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: resolve
+    uses: ./.github/workflows/integration-test.yml
+    with:
+      ref: ${{ needs.resolve.outputs.tag }}
+    secrets: inherit
+
+  publish:
+    needs: [resolve, test]
+    # A release and a scheduled rebuild must not push the same tags at once.
+    concurrency:
+      group: publish-image
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      ref: ${{ needs.resolve.outputs.tag }}
+      version: ${{ needs.resolve.outputs.version }}
