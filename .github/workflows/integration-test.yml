@@ -29,7 +29,9 @@ permissions:
 
 jobs:
   integration-test:
-    runs-on: ubuntu-latest
+    # Pinned: on ubuntu-latest (26.04, podman 5) the proxy never answers
+    # through the published port.
+    runs-on: ubuntu-24.04
     steps:
       - name: Check secrets are set
         env:
